@@ -1,29 +1,23 @@
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
-local StarterGui = game:GetService("StarterGui")
 local TweenService = game:GetService("TweenService")
 
 local LocalPlayer = Players.LocalPlayer
 
 local Config = {
-    BallMagnet = false,
+    BallPull = false,
     Range = 120,
     CFrameSpeed = false,
     SpeedValue = 1,
 }
 
 local Capabilities = {
-    HookFunction = type(hookfunction) == "function",
     HookMetamethod = type(hookmetamethod) == "function",
     NewCclosure = type(newcclosure) == "function",
     CheckCaller = type(checkcaller) == "function",
     GetRawMetatable = type(getrawmetatable) == "function",
     SetReadonly = type(setreadonly) == "function",
-    GetNamecallMethod = type(getnamecallmethod) == "function",
-    GetConnections = type(getconnections) == "function",
-    FireSignal = type(firesignal) == "function",
-    GetGc = type(getgc) == "function",
     ProtectGui = (type(syn) == "table" and type(syn.protect_gui) == "function") or type(protect_gui) == "function",
 }
 
@@ -38,7 +32,7 @@ end
 local function HookMetamethod(Target, Method, Replacement)
     if Capabilities.HookMetamethod then
         local Ok, Hooked = pcall(hookmetamethod, Target, Method, Replacement)
-        if Ok then return Hooked end
+        if Ok and Hooked then return Hooked end
     end
     if Capabilities.GetRawMetatable and Capabilities.SetReadonly then
         local Ok, Meta = pcall(getrawmetatable, Target)
@@ -65,9 +59,7 @@ local function GetHumanoid()
 end
 
 local function FindFootball()
-    local Ok, Children = pcall(function() return workspace:GetChildren() end)
-    if not Ok then return nil end
-    for _, Object in ipairs(Children) do
+    for _, Object in ipairs(workspace:GetChildren()) do
         if Object:IsA("BasePart") and Object.Name:lower():find("football") then
             return Object
         end
@@ -75,29 +67,25 @@ local function FindFootball()
     return nil
 end
 
-local function Multiplier()
-    local Ok, Ping = pcall(function() return LocalPlayer:GetNetworkPing() * 1000 end)
-    if not Ok or not Ping then return 1 end
+local function PingMultiplier()
+    local Ping = LocalPlayer:GetNetworkPing() * 1000
     if Ping > 200 then return 2 end
     if Ping > 100 then return 1.4 end
     return 1
 end
 
 local PositionCache = {}
-local OriginalCFrame = CFrame.new()
-local PreventCFrame = false
-local OriginalIndex
-local HookMethod
+local SpoofedCFrame = nil
+local OriginalIndex = nil
+local HookInstalled = false
 
-local function InstallCFrameHook()
-    if HookMethod then return end
-    local Original = HookMetamethod(game, "__index", function(Self, Key)
-        if Key == "CFrame" and Self == GetRoot() and PreventCFrame then
-            if Capabilities.CheckCaller and not checkcaller() then
-                return OriginalCFrame
-            end
-            if not Capabilities.CheckCaller then
-                return OriginalCFrame
+local function InstallHook()
+    if HookInstalled then return end
+    HookInstalled = true
+    local Previous = HookMetamethod(game, "__index", function(Self, Key)
+        if Key == "CFrame" and SpoofedCFrame and Self == GetRoot() then
+            if not Capabilities.CheckCaller or not checkcaller() then
+                return SpoofedCFrame
             end
         end
         if OriginalIndex then
@@ -105,65 +93,62 @@ local function InstallCFrameHook()
         end
         return Self[Key]
     end)
-    OriginalIndex = Original
-    if Original then HookMethod = true end
+    if Previous then
+        OriginalIndex = Previous
+    end
 end
 
-local BallConnection
-local SpeedConnection
+InstallHook()
 
-local function StartBallMagnet()
-    if BallConnection then BallConnection:Disconnect() end
-    InstallCFrameHook()
-    BallConnection = RunService.Heartbeat:Connect(function()
-        if not Config.BallMagnet then return end
-        local Ball = FindFootball()
-        local Root = GetRoot()
-        if not Ball or not Root then return end
+local PullConnection = RunService.Heartbeat:Connect(function()
+    if not Config.BallPull then
+        SpoofedCFrame = nil
+        return
+    end
 
-        local Id = tostring(Ball:GetDebugId())
-        local Old = PositionCache[Id]
-        local Now = Ball.Position
-        PositionCache[Id] = Now
-        Old = Old or Now
+    local Ball = FindFootball()
+    local Root = GetRoot()
+    if not Ball or not Root then
+        SpoofedCFrame = nil
+        return
+    end
 
-        if (Root.Position - Now).Magnitude > Config.Range then return end
+    local Id = tostring(Ball:GetDebugId())
+    local Old = PositionCache[Id]
+    local Now = Ball.Position
+    PositionCache[Id] = Now
+    if not Old then Old = Now end
 
-        local Velocity = Now - Old
-        local Target
-        local Mult = Multiplier()
+    if (Root.Position - Now).Magnitude > Config.Range then
+        SpoofedCFrame = nil
+        return
+    end
 
-        if Velocity.Magnitude > 0.1 then
-            Target = Now + (Velocity.Unit * 8 * Mult)
-        else
-            Target = Now + Vector3.new(5, 0, 5) * Mult
-        end
+    local Velocity = Now - Old
+    local Target
+    local Mult = PingMultiplier()
 
-        Target = Vector3.new(Target.X, math.max(Target.Y, Now.Y), Target.Z)
+    if Velocity.Magnitude > 0.1 then
+        Target = Now + (Velocity.Unit * 8 * Mult)
+    else
+        Target = Now + Vector3.new(5, 0, 5) * Mult
+    end
 
-        OriginalCFrame = Root.CFrame
-        PreventCFrame = true
-        Root.CFrame = CFrame.new(Target)
+    Target = Vector3.new(Target.X, math.max(Target.Y, Now.Y), Target.Z)
 
-        RunService.RenderStepped:Wait()
+    SpoofedCFrame = Root.CFrame
+    Root.CFrame = CFrame.new(Target)
+end)
 
-        Root.CFrame = OriginalCFrame
-        PreventCFrame = false
-    end)
-end
-
-local function StartCFrameSpeed()
-    if SpeedConnection then SpeedConnection:Disconnect() end
-    SpeedConnection = RunService.Heartbeat:Connect(function()
-        if not Config.CFrameSpeed then return end
-        local Root = GetRoot()
-        local Humanoid = GetHumanoid()
-        if not Root or not Humanoid then return end
-        if Humanoid.MoveDirection.Magnitude > 0 then
-            Root.CFrame = Root.CFrame + (Humanoid.MoveDirection * Config.SpeedValue)
-        end
-    end)
-end
+local SpeedConnection = RunService.Heartbeat:Connect(function()
+    if not Config.CFrameSpeed then return end
+    local Root = GetRoot()
+    local Humanoid = GetHumanoid()
+    if not Root or not Humanoid then return end
+    if Humanoid.MoveDirection.Magnitude > 0 then
+        Root.CFrame = Root.CFrame + (Humanoid.MoveDirection * Config.SpeedValue)
+    end
+end)
 
 local function BuildLoadingScreen()
     local LoadingGui = Instance.new("ScreenGui")
@@ -186,7 +171,6 @@ local function BuildLoadingScreen()
     end
 
     local Backdrop = Instance.new("Frame")
-    Backdrop.Name = "Backdrop"
     Backdrop.Size = UDim2.new(1, 0, 1, 0)
     Backdrop.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
     Backdrop.BorderSizePixel = 0
@@ -194,32 +178,28 @@ local function BuildLoadingScreen()
     Backdrop.Parent = LoadingGui
 
     local Center = Instance.new("Frame")
-    Center.Name = "Center"
-    Center.Size = UDim2.new(0, 320, 0, 140)
-    Center.Position = UDim2.new(0.5, -160, 0.5, -70)
+    Center.Size = UDim2.new(0, 340, 0, 150)
+    Center.Position = UDim2.new(0.5, -170, 0.5, -75)
     Center.BackgroundTransparency = 1
     Center.ZIndex = 2
     Center.Parent = Backdrop
 
     local Brand = Instance.new("TextLabel")
-    Brand.Name = "Brand"
-    Brand.Size = UDim2.new(1, 0, 0, 40)
-    Brand.Position = UDim2.new(0, 0, 0, 0)
+    Brand.Size = UDim2.new(1, 0, 0, 42)
     Brand.BackgroundTransparency = 1
-    Brand.Text = "Download.gg"
+    Brand.Text = "Welcome to the Hub"
     Brand.TextColor3 = Color3.fromRGB(255, 255, 255)
     Brand.Font = Enum.Font.GothamBold
-    Brand.TextSize = 36
+    Brand.TextSize = 28
     Brand.TextTransparency = 1
     Brand.ZIndex = 3
     Brand.Parent = Center
 
     local SubBrand = Instance.new("TextLabel")
-    SubBrand.Name = "SubBrand"
     SubBrand.Size = UDim2.new(1, 0, 0, 18)
-    SubBrand.Position = UDim2.new(0, 0, 0, 44)
+    SubBrand.Position = UDim2.new(0, 0, 0, 46)
     SubBrand.BackgroundTransparency = 1
-    SubBrand.Text = "UNIVERSAL FOOTBALL SCRIPT"
+    SubBrand.Text = "DOWNLOAD.GG"
     SubBrand.TextColor3 = Color3.fromRGB(180, 180, 180)
     SubBrand.Font = Enum.Font.Gotham
     SubBrand.TextSize = 11
@@ -228,9 +208,8 @@ local function BuildLoadingScreen()
     SubBrand.Parent = Center
 
     local BarTrack = Instance.new("Frame")
-    BarTrack.Name = "BarTrack"
     BarTrack.Size = UDim2.new(0, 260, 0, 3)
-    BarTrack.Position = UDim2.new(0.5, -130, 0, 92)
+    BarTrack.Position = UDim2.new(0.5, -130, 0, 94)
     BarTrack.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
     BarTrack.BorderSizePixel = 0
     BarTrack.BackgroundTransparency = 1
@@ -242,7 +221,6 @@ local function BuildLoadingScreen()
     BarTrackCorner.Parent = BarTrack
 
     local BarFill = Instance.new("Frame")
-    BarFill.Name = "BarFill"
     BarFill.Size = UDim2.new(0, 0, 1, 0)
     BarFill.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
     BarFill.BorderSizePixel = 0
@@ -254,9 +232,8 @@ local function BuildLoadingScreen()
     BarFillCorner.Parent = BarFill
 
     local Status = Instance.new("TextLabel")
-    Status.Name = "Status"
     Status.Size = UDim2.new(1, 0, 0, 16)
-    Status.Position = UDim2.new(0, 0, 0, 104)
+    Status.Position = UDim2.new(0, 0, 0, 106)
     Status.BackgroundTransparency = 1
     Status.Text = "Initializing"
     Status.TextColor3 = Color3.fromRGB(140, 140, 140)
@@ -267,7 +244,6 @@ local function BuildLoadingScreen()
     Status.Parent = Center
 
     local ScanLine = Instance.new("Frame")
-    ScanLine.Name = "ScanLine"
     ScanLine.Size = UDim2.new(1, 0, 0, 1)
     ScanLine.Position = UDim2.new(0, 0, 0, -2)
     ScanLine.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
@@ -287,37 +263,25 @@ local function BuildLoadingScreen()
         end
     end)
 
-    local FadeIn = TweenService:Create(Brand, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+    TweenService:Create(Brand, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
         TextTransparency = 0
-    })
-
-    local SubFadeIn = TweenService:Create(SubBrand, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-        TextTransparency = 0
-    })
-
-    local BarFadeIn = TweenService:Create(BarTrack, TweenInfo.new(0.6), {
-        BackgroundTransparency = 0
-    })
-
-    local StatusFadeIn = TweenService:Create(Status, TweenInfo.new(0.6), {
-        TextTransparency = 0
-    })
-
-    FadeIn:Play()
+    }):Play()
     task.wait(0.15)
-    SubFadeIn:Play()
+    TweenService:Create(SubBrand, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        TextTransparency = 0
+    }):Play()
     task.wait(0.15)
-    BarFadeIn:Play()
-    StatusFadeIn:Play()
+    TweenService:Create(BarTrack, TweenInfo.new(0.6), { BackgroundTransparency = 0 }):Play()
+    TweenService:Create(Status, TweenInfo.new(0.6), { TextTransparency = 0 }):Play()
 
     task.wait(0.4)
 
     local Steps = {
-        { Progress = 0.18, Text = "Hooking Environment" },
-        { Progress = 0.42, Text = "Resolving Metatable" },
-        { Progress = 0.65, Text = "Caching Football" },
-        { Progress = 0.85, Text = "Binding Input" },
-        { Progress = 1.00, Text = "Ready" },
+        { Progress = 0.2, Text = "Hooking Environment" },
+        { Progress = 0.45, Text = "Resolving Metatable" },
+        { Progress = 0.7, Text = "Caching Football" },
+        { Progress = 0.9, Text = "Binding Input" },
+        { Progress = 1.0, Text = "Ready" },
     }
 
     for _, Step in ipairs(Steps) do
@@ -330,31 +294,24 @@ local function BuildLoadingScreen()
 
     task.wait(0.35)
 
-    local BrandOut = TweenService:Create(Brand, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+    TweenService:Create(Brand, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
         TextTransparency = 1
-    })
-    local SubOut = TweenService:Create(SubBrand, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+    }):Play()
+    TweenService:Create(SubBrand, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
         TextTransparency = 1
-    })
-    local BarOut = TweenService:Create(BarTrack, TweenInfo.new(0.5), { BackgroundTransparency = 1 })
-    local FillOut = TweenService:Create(BarFill, TweenInfo.new(0.5), { BackgroundTransparency = 1 })
-    local StatusOut = TweenService:Create(Status, TweenInfo.new(0.5), { TextTransparency = 1 })
-    local ScanOut = TweenService:Create(ScanLine, TweenInfo.new(0.5), { BackgroundTransparency = 1 })
-
-    BrandOut:Play()
-    SubOut:Play()
-    BarOut:Play()
-    FillOut:Play()
-    StatusOut:Play()
-    ScanOut:Play()
+    }):Play()
+    TweenService:Create(BarTrack, TweenInfo.new(0.5), { BackgroundTransparency = 1 }):Play()
+    TweenService:Create(BarFill, TweenInfo.new(0.5), { BackgroundTransparency = 1 }):Play()
+    TweenService:Create(Status, TweenInfo.new(0.5), { TextTransparency = 1 }):Play()
+    TweenService:Create(ScanLine, TweenInfo.new(0.5), { BackgroundTransparency = 1 }):Play()
 
     task.wait(0.3)
 
-    local BackdropOut = TweenService:Create(Backdrop, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+    local Out = TweenService:Create(Backdrop, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
         BackgroundTransparency = 1
     })
-    BackdropOut:Play()
-    BackdropOut.Completed:Wait()
+    Out:Play()
+    Out.Completed:Wait()
 
     LoadingGui:Destroy()
 end
@@ -380,7 +337,6 @@ local function BuildUI()
     end
 
     local Main = Instance.new("Frame")
-    Main.Name = "Main"
     Main.Size = UDim2.new(0, 400, 0, 300)
     Main.Position = UDim2.new(0, 20, 0.5, -150)
     Main.BackgroundColor3 = Color3.fromRGB(8, 8, 10)
@@ -399,7 +355,6 @@ local function BuildUI()
     MainStroke.Parent = Main
 
     local Header = Instance.new("Frame")
-    Header.Name = "Header"
     Header.Size = UDim2.new(1, 0, 0, 56)
     Header.BackgroundColor3 = Color3.fromRGB(12, 12, 15)
     Header.BorderSizePixel = 0
@@ -634,7 +589,7 @@ local function BuildUI()
     end
 
     MakeToggle("Ball Pull", 1, false, function(State)
-        Config.BallMagnet = State
+        Config.BallPull = State
     end)
 
     MakeSlider("Pull Range", 2, 10, 400, 120, function(Value)
@@ -656,10 +611,3 @@ BuildLoadingScreen()
 
 local UI = BuildUI()
 UI.Enabled = true
-
-StartBallMagnet()
-StartCFrameSpeed()
-
-LocalPlayer.CharacterAdded:Connect(function()
-    task.wait(1)
-end)
